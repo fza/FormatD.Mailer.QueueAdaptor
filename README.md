@@ -2,16 +2,8 @@
 FormatD.Mailer.QueueAdaptor
 ==========
 
-This package changes the mail delivery in Neos (`neos/swiftmailer`) to asynchronously send mails via a queue.
+This package changes the mail delivery in Neos (`neos/symfonymailer`) to asynchronously send mails via a queue.
 The idea is to make it work as a plug-and-play replacement for every mail generated in the system.
-
-Disclaimer
-----------
-
-This Package is just a proof of concept and needs a patch for `neos/swiftmailer` to work
-(contained in this package and applied automatically by `cweagans/composer-patches`).
-The patch is neccessary because the Message object of `neos/swiftmailer` cannot be serialized. 
-The patch changes the implementation from inheritance to a decorator pattern.
 
 Setup
 ----------
@@ -51,3 +43,47 @@ Now test if it is working:
 
 	./flow email:send --body "Hello World" from@example.com to@example.com "My Test Mail"
 
+## Send mail via specific queue
+
+All email objects (that are or extend `\Symfony\Component\Mime\Email`) are placed into the default queue
+`fdmailer-mail-queue`. The default queue can be configured, see [Settings.yaml](Configuration/Settings.yaml).
+Sending mail via a specific queue is also possible:
+
+```php
+    $mail = new \FormatD\Mailer\QueueAdaptor\QueueableEmail(); // extends \Symfony\Component\Mime\Email
+    $mail->setQueueName('my-queue');
+    //...
+    $mailerService->getMailer()->send($mail); // Will be intercepted and placed into the specified queue
+```
+
+## Send mail immediately (without queue)
+
+```php
+    $mailQueue = $this->objectManager->get('\FormatD\Mailer\QueueAdaptor\Service\MailQueue');
+    $mailQueue->withoutQueuing(function () {
+        $mail = new \Symfony\Component\Mime\Email();
+        //...
+        $mailerService->getMailer()->send($mail);
+    });
+```
+
+## Interoperability
+
+* Needs a Neos installation using [`neos/symfonymailer`](https://packagist.org/packages/neos/symfonymailer) (default as of Neos 8.3.24)
+* Works with _and without_ [`formatd/mailer`](https://github.com/Format-D/FormatD.Mailer)
+
+## Compatibility
+
+Versioning scheme:
+
+     1.0.0 
+     | | |
+     | | Bugfix Releases (non breaking)
+     | Neos Compatibility Releases (non breaking except framework dependencies)
+     Feature Releases (breaking)
+
+Releases und compatibility:
+
+| Package-Version | Neos Flow Version | neos/fusion-form |
+|-----------------|-------------------|------------------|
+| 1.0.0           | ^8.0              | ^3.0             |

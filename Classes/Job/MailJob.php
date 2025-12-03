@@ -2,107 +2,104 @@
 
 namespace FormatD\Mailer\QueueAdaptor\Job;
 
+use Exception;
+use Flowpack\JobQueue\Common\Job\JobInterface;
+use Flowpack\JobQueue\Common\Queue\Message;
+use Flowpack\JobQueue\Common\Queue\QueueInterface;
+use FormatD\Mailer\QueueAdaptor\Service\MailQueue;
+use Neos\Cache\Exception as NeosCacheException;
+use Neos\Cache\Exception\InvalidDataException;
 use Neos\Cache\Frontend\StringFrontend;
 use Neos\Flow\Annotations as Flow;
-use Flowpack\JobQueue\Common\Job\JobInterface;
-use Flowpack\JobQueue\Common\Queue\QueueInterface;
-use Flowpack\JobQueue\Common\Queue\Message;
+use Neos\SymfonyMailer\Service\MailerService;
+use Ramsey\Uuid\Uuid;
+use Symfony\Component\Mailer\Envelope;
+use Symfony\Component\Mime\Email;
 
-class MailJob implements JobInterface {
+/**
+ * @Flow\Scope("prototype")
+ */
+class MailJob implements JobInterface
+{
+	#[Flow\InjectConfiguration(path: 'serializationCache', package: 'FormatD.Mailer.QueueAdaptor')]
+	protected array $serializationCacheSettings;
 
-	/**
-	 * @Flow\InjectConfiguration(type="Settings", package="FormatD.Mailer.QueueAdaptor", path="serializationCache")
-	 * @var array
-	 */
-	protected $serializationCacheSettings;
-
-	/**
-	 * @Flow\Inject
-	 * @var Context
-	 */
-	protected $jobContext;
+	#[Flow\Inject]
+	protected MailQueue $mailQueue;
 
 	/**
-	 * @Flow\Inject
+	 * Factory-backed objects (like cache) are **always** proxified by the Flow Object Manager, regardless if they're lazy or not.
+	 * Such proxy objects do not extend the original class, thus a direct property type declaration gives a TypeError.
 	 * @var StringFrontend
 	 */
-	protected $mailSerializationCache;
+	#[Flow\Inject]
+	protected mixed $mailDataCache = null;
 
-	/**
-	 * @var \Neos\SwiftMailer\Message
-	 */
-	protected $email = null;
+	#[Flow\Inject]
+	protected MailerService $mailerService;
 
-	/**
-	 * @var string
-	 */
-	protected $emailSerializationCacheIdentifier = null;
+	protected ?string $emailCacheIdentifier = null;
 
-	/**
-	 * MailJob constructor.
-	 * @param \Neos\SwiftMailer\Message $email
-	 */
-	public function __construct(\Neos\SwiftMailer\Message $email) {
-		$this->email = $email;
+	public function __construct(
+		protected Email     $email,
+		protected ?Envelope $envelope = null
+	)
+	{
 	}
 
 	/**
 	 * Execute the job
-	 *
 	 * A job should finish itself after successful execution using the queue methods.
 	 *
-	 * @param QueueInterface $queue
-	 * @param Message $message The original message
-	 * @return bool TRUE if the job was executed successfully and the message should be finished
+	 * @throws Exception
 	 */
-	public function execute(QueueInterface $queue, Message $message): bool {
+	public function execute(QueueInterface $queue, Message $message): bool
+	{
+		$this->tryRestoreDataFromCache();
 
-		$message = $this->getEmail();
+		if ($this->email) {
+			$this->mailQueue->withoutQueuing(function () {
+				$this->mailerService->getMailer()->send($this->email, $this->envelope);
+			});
+			return true;
+		}
 
-		$this->jobContext->withoutMailQueuing(function () use ($message) {
-			$message->send();
-		});
+		// In case the mail job is executed after the email data has already been evicted from cache, we obviously cannot proceed.
+		throw new Exception('Email data is no longer available in cache, so email cannot be sent.');
+	}
 
-		return TRUE;
+	public function getLabel(): string
+	{
+		return $this->email->getSubject();
 	}
 
 	/**
-	 * Get a readable label for the job
-	 *
-	 * @return string A label for the job
-	 */
-	public function getLabel(): string {
-		return $this->getEmail()->getSubject();
-	}
-
-	/**
-	 * Serialize the email to a file because it can get really big with attachments
+	 * Serialize the email to (file) cache so we don't need to store big email data incl. attachments in the queue
 	 *
 	 * @return string[]
-	 * @throws \Neos\Cache\Exception
-	 * @throws \Neos\Cache\Exception\InvalidDataException
+	 * @throws NeosCacheException|InvalidDataException
 	 */
-	public function __sleep()
+	public function __sleep(): array
 	{
-		if ($this->serializationCacheSettings['enabled']) {
-			$this->emailSerializationCacheIdentifier = uniqid('email-');
-			$this->mailSerializationCache->set($this->emailSerializationCacheIdentifier, serialize($this->email), [], 172800); // 48 Std. lifetime
-			return array('emailSerializationCacheIdentifier');
+		if (($this->serializationCacheSettings['enabled'] ?? false) && $this->mailDataCache) {
+			$this->emailCacheIdentifier = sprintf('email-%s', Uuid::uuid4());
+			$data = [
+				'email' => $this->email,
+				'envelope' => $this->envelope,
+			];
+			$this->mailDataCache->set($this->emailCacheIdentifier, serialize($data), [], 172800); // 48h lifetime
+			return ['emailCacheIdentifier'];
 		}
 
-		return array('email');
+		return ['email', 'envelope'];
 	}
 
-	/**
-	 * Restores the serialized email if cached in file
-	 *
-	 * @return \Neos\SwiftMailer\Message
-	 */
-	protected function getEmail() {
-		if (!$this->email && $this->emailSerializationCacheIdentifier && $this->mailSerializationCache->has($this->emailSerializationCacheIdentifier)) {
-			$this->email = unserialize($this->mailSerializationCache->get($this->emailSerializationCacheIdentifier));
+	protected function tryRestoreDataFromCache(): void
+	{
+		if ($this->emailCacheIdentifier && ($serializedData = $this->mailDataCache?->get($this->emailCacheIdentifier))) {
+			$data = unserialize($serializedData);
+			$this->email = $data['email'];
+			$this->envelope = $data['envelope'];
 		}
-		return $this->email;
 	}
-
 }

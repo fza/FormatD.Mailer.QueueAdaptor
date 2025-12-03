@@ -1,7 +1,6 @@
-
 'FormatD\Mailer\QueueAdaptor\Job\MailJob':
   properties:
-    mailSerializationCache:
+    mailDataCache:
       object:
         factoryObjectName: 'Neos\Flow\Cache\CacheManager'
         factoryMethodName: getCache

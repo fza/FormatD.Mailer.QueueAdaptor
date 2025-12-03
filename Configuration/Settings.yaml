@@ -9,14 +9,15 @@ Flowpack:
             defaultTimeout: 50
           releaseOptions:
             priority: 512
-            delay: 120
+            delay: 2
 
 FormatD:
   Mailer:
     QueueAdaptor:
       # Enable or disable asynchronous handling of mails
       enableAsynchronousMails: true
+      queueName: 'fdmailer-mail-queue'
 
-      # E-Mails with attachments may be to big to put into the queue payload as a whole (at least for Doctrine Backend). So we use file cache to store this data.
+      # Emails with attachments may be too big to put into the queue payload as a whole (at least for Doctrine Backend). So we use file cache to store this data.
       serializationCache:
         enabled: true

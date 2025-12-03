@@ -1,65 +1,66 @@
 <?php
+
 namespace FormatD\Mailer\QueueAdaptor\Aspect;
 
-/*                                                                        *
- * This script belongs to the Flow package "FormatD.Mailer.QueueAdaptor". *
- *                                                                        */
-
-use FormatD\Mailer\QueueAdaptor\Job\Context;
-use FormatD\Mailer\QueueAdaptor\Job\MailJob;
-use Flowpack\JobQueue\Common\Job\JobManager;
+use FormatD\Mailer\QueueAdaptor\Service\MailQueue;
+use FormatD\Mailer\QueueAdaptor\Transport\QueuingTransport;
 use Neos\Flow\Annotations as Flow;
-use Neos\SwiftMailer\Message;
-
+use Neos\Flow\Aop\JoinPointInterface;
+use ReflectionException;
+use ReflectionObject;
+use Symfony\Component\Mailer\Envelope;
+use Symfony\Component\Mailer\Mailer;
+use Symfony\Component\Mailer\SentMessage;
+use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\RawMessage;
 
 /**
  * @Flow\Aspect
- * @Flow\Introduce("class(Neos\SwiftMailer\Message)", traitName="FormatD\Mailer\QueueAdaptor\Traits\QueueNameTrait")
  */
-class QueuingAspect {
+class QueuingAspect
+{
+	#[Flow\InjectConfiguration]
+	protected array $settings;
+
+	#[Flow\Inject]
+	protected MailQueue $mailQueue;
 
 	/**
-	 * @var JobManager
-	 * @Flow\Inject
-	 */
-	protected $jobManager;
-
-	/**
-	 * @Flow\Inject
-	 * @var Context
-	 */
-	protected $jobContext;
-
-	/**
-	 * @Flow\InjectConfiguration
-	 * @var array
-	 */
-	protected $settings;
-
-	/**
-	 * Intercept all emails or add bcc according to package configuration
+	 * When FormatD.Mailer is **not** installed, we augment the Symfony Mailer instance directly
 	 *
-	 * @param \Neos\Flow\Aop\JoinPointInterface $joinPoint
-	 * @Flow\Around("setting(FormatD.Mailer.QueueAdaptor.enableAsynchronousMails) && method(Neos\SwiftMailer\Message->send())")
-	 * @return void
+	 * @Flow\Around("method(Neos\SymfonyMailer\Service\MailerService->getMailer())")
+	 * @throws ReflectionException
 	 */
-	public function queueEmails(\Neos\Flow\Aop\JoinPointInterface $joinPoint) {
-
-		if ($this->jobContext->isMailQueueingDisabled()) {
-			return $joinPoint->getAdviceChain()->proceed($joinPoint);
-		}
-
-		/** @var Message $email */
-		$email = $joinPoint->getProxy();
-		$job = new MailJob($email);
-		$this->jobManager->queue($email->getQueueName() ? $email->getQueueName() : 'fdmailer-mail-queue', $job);
-
-		// Neos\SwiftMailer\Message->send() should return the number of recipients who were accepted for delivery
-		// We dont know that until mail is execured by queue so we assume every recipient was accepted
-		// @todo: read recipient count and return that
-		return 1;
+	public function decorateTransport(JoinPointInterface $joinPoint): Mailer
+	{
+		/** @var Mailer $mailer */
+		$mailer = $joinPoint->getAdviceChain()->proceed($joinPoint);
+		$transportProperty = (new ReflectionObject($mailer))->getProperty('transport');
+		$transportProperty->setValue($mailer, new QueuingTransport($transportProperty->getValue($mailer)));
+		return $mailer;
 	}
 
-}
+	/**
+	 * When FormatD.Mailer is installed, the above `decorateMailer()` advice is not always called depending
+	 * on configuration. In that case, we intercept the special transport object's `send()` method instead.
+	 *
+	 * @Flow\Around("method(FormatD\Mailer\Transport\FdMailerTransport->send()) || method(FormatD\Mailer\Transport\InterceptingTransport->send())")
+	 */
+	public function transportSend(JoinPointInterface $joinPoint): ?SentMessage
+	{
+		/** @var RawMessage $message */
+		$message = $joinPoint->getMethodArgument('message');
 
-?>
+		if ($message instanceof Email && !$this->mailQueue->isMailQueuingDisabled()) {
+			/** @var ?Envelope $envelope */
+			$envelope = $joinPoint->getMethodArgument('envelope');
+
+			// Queue the mail before interception, i.e. before rewrite of the mail headers (To, Bcc, etc.)
+			// When the queued mail is released, the mail is intercepted again.
+			$this->mailQueue->enqueueMessage($message, $envelope);
+			return null;
+		}
+
+		return $joinPoint->getAdviceChain()->proceed($joinPoint);
+	}
+}
