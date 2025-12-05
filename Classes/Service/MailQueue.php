@@ -33,7 +33,7 @@ class MailQueue
 
 	public function isMailQueuingDisabled(): bool
 	{
-		return $this->mailQueuingDisabled;
+        return $this->mailQueuingDisabled || !($this->settings['enableAsynchronousMails'] ?? false);
 	}
 
 	public function withoutQueuing(Closure $callback): void
